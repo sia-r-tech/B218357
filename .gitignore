@@ -47,3 +47,5 @@ rsconnect/
 
 # data folder
 data/
+
+.DS_Store
