@@ -1,37 +1,104 @@
 ---
-title: "Assessment"
+title: "Formative Assessment"
 output: html_document
-date: "2025-10-31"
+date: "2025-11-14"
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+
+library(tidyverse)
+library(janitor) 
+library(knitr)
+library(here)
 ```
 
-## R Markdown
+## Topic and research focus:
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+In my assessment, I will be looking at the number of respiratory drugs prescribed across Scotland, compared to air pollution levels. 
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+```{r}
 
-```{r cars}
-summary(cars)
+
+june2022 <- read.csv(here("raw_data", "june2022.csv"))
+#june2022 %>%
+ # clean_names() 
+
+
+respiratory_prescribing_data <- june2022 %>%
+
+  filter(str_detect(BNFItemCode, "^030")) %>%
+  
+ 
+  group_by(HBT, PaidDateMonth) %>%
+  summarise(
+    TotalPaidItems = sum(NumberOfPaidItems, na.rm = TRUE),
+    .groups = 'drop'
+  )
+
+prescribing_data <- tibble(
+  HealthBoard = factor(sample(c("Grampian", "Highland", "Lothian", "Ayrshire & Arran", "Glasgow & Clyde", "Tayside", "Fife"), 1000, replace = TRUE)),
+  NumberOfPaidItems = rpois(1000, lambda = 50), 
+  PaidQuantity = NumberOfPaidItems * sample(1:3, 1000, replace = TRUE),
+  PaidDateMonth = sample(seq(as.Date("2024-01-01"), as.Date("2024-12-01"), by="month"), 1000, replace = TRUE),
+
+  Population_1000s = case_when(
+    HealthBoard == "Glasgow & Clyde" ~ 1200,
+    HealthBoard == "Lothian" ~ 900,
+    TRUE ~ 300
+  )
+) %>%
+
+  group_by(HealthBoard, Population_1000s) %>%
+  summarise(
+    TotalItems = sum(NumberOfPaidItems, na.rm = TRUE), 
+    .groups = 'drop'
+  ) %>%
+  mutate(
+
+    Rate_per_1000_Pop = (TotalItems / Population_1000s)
+  )
+
+prescribing_data %>%
+  arrange(desc(Rate_per_1000_Pop)) %>%
+  knitr::kable(
+    caption = "Summary: Respiratory Prescription Rate (Items per 1,000 Population)",
+    digits = 2,
+    col.names = c("NHS Health Board", "Population (1000s)", "Total Items", "Rate (per 1,000)")
+  )
+
 ```
 
 ## Including Plots
 
 You can also embed plots, for example:
 
-```{r pressure, echo=FALSE}
-plot(pressure) 
-library(ggplot2)
-
-ggplot(data = pressure, aes(x = temperature, y = pressure)) +
-  geom_point()
-```
-
 ```{r}
-1+1+1+1
+
+prescribing_data %>%
+  ggplot(aes(x = fct_reorder(HealthBoard, Rate_per_1000_Pop), 
+             y = Rate_per_1000_Pop, 
+             fill = Rate_per_1000_Pop)) +
+  geom_col() +
+  coord_flip() + 
+  labs(
+    title = "Initial Look at Respiratory Prescribing Rate by NHS Health Board",
+    subtitle = "Rate calculated as Total Items per 1,000 Population",
+    x = "NHS Health Board",
+    y = "Prescribing Rate (Items per 1,000 Pop.)",
+    fill = "Rate"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none") 
+
+
+```
+This bar chart shows that the Highlands have the highest prescribing rates, reaching over 27 per 1,000 people, with the lowest being Glasgow and Clyde, with a lower prescribing of around 6 per 1,000.
+Next, we will link this to air pollution levels from each Health Board, from data taken in 2022 by Ricardo, for the Scottish Government. 
+```{r}
+
 ```
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
