@@ -1,104 +1,211 @@
 ---
-title: "Formative Assessment"
+title: "Assessment"
 output: html_document
 date: "2025-11-14"
 ---
 
-```{r setup, include=FALSE}
 
-knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+not too much:
+```{r}
+library(tidyverse)   # dplyr + ggplot2
+library(sf)          # maps
+library(janitor)     # clean_names
+library(here)        # file paths
+library(ggspatial)   # north arrow + scale bar
+library(gt)          # simple table (basic use only)
 
+# All 2022 prescription CSVs
+files <- list.files(here("raw_data", "consecutive_data"), pattern = "csv")
+
+consecutive_data <- files %>% 
+  map_dfr(~ read_csv(here("raw_data", "consecutive_data", .x))) %>% 
+  clean_names()
+
+# Filter to your drug group if needed, otherwise keep all
+# consecutive_data <- consecutive_data %>% filter(str_starts(bnf_item_code, "03"))
+
+# Health board summary (hub)
+prescriptions_hb <- consecutive_data %>% 
+  group_by(hbt) %>% 
+  summarise(total_quantity = sum(paid_quantity, na.rm = TRUE), .groups = "drop")
+
+# Population per HB
+hb_populations <- read_csv(here("week06", "Week6_hb2019_pop_est.csv")) %>% 
+  clean_names()
+
+hb_populations_2022 <- hb_populations %>% 
+  filter(sex == "All") %>% 
+  select(hb, total_pop = all_ages)
+
+# Join once to get rate per 1,000
+hb_rates <- prescriptions_hb %>% 
+  left_join(hb_populations_2022, join_by(hbt == hb)) %>% 
+  mutate(rate_per_1000 = (total_quantity / total_pop) * 1000)
+
+hb_ur_lookup <- tribble(
+  ~HBCode,     ~ur_majority,
+  "S08000015", "Mixed",
+  "S08000016", "Rural",
+  "S08000017", "Rural",
+  "S08000019", "Mixed",
+  "S08000020", "Mixed",
+  "S08000022", "Rural",
+  "S08000024", "Urban",
+  "S08000025", "Rural",
+  "S08000026", "Rural",
+  "S08000028", "Rural",
+  "S08000029", "Mixed",
+  "S08000030", "Mixed",
+  "S08000031", "Urban",
+  "S08000032", "Mixed"
+)
+
+NHS_healthboards <- st_read(here("week06", "Week6_NHS_HealthBoards_2019.shp"))
+
+hb_prescription_rates <- NHS_healthboards %>% 
+  left_join(hb_rates,      join_by(HBCode == hbt)) %>% 
+  left_join(hb_ur_lookup,  by = "HBCode")
+
+map_prescriptions <- hb_prescription_rates %>% 
+  ggplot(aes(fill = rate_per_1000)) +
+  geom_sf(colour = "black", size = 0.1) +
+  scale_fill_distiller(
+    palette = "Blues",
+    direction = 1,
+    name = "Prescriptions\nper 1,000"
+  ) +
+  labs(
+    title = "Prescriptions per 1,000 People by Health Board (2022)",
+    subtitle = "NHS Scotland health boards"
+  ) +
+  theme_void() +
+  annotation_scale(location = "tl") +
+  annotation_north_arrow(location = "nl")
+
+map_prescriptions
+
+ur_summary <- hb_prescription_rates %>% 
+  group_by(ur_majority) %>% 
+  summarise(mean_rate = mean(rate_per_1000, na.rm = TRUE), .groups = "drop")
+
+ggplot(ur_summary, aes(x = ur_majority, y = mean_rate, fill = ur_majority)) +
+  geom_col() +
+  labs(
+    title = "Average prescribing rate by area type",
+    x = "Area type",
+    y = "Prescriptions per 1,000"
+  ) +
+  theme_grey() +
+  theme(legend.position = "none")
+
+
+library(gt)
+
+
+# Summarise by urban–rural group
+ur_summary <- hb_prescription_rates %>% 
+  st_drop_geometry() %>% 
+  group_by(ur_majority) %>% 
+  summarise(
+    n_boards          = n(),
+    population        = sum(total_pop, na.rm = TRUE),
+    total_items       = sum(total_quantity, na.rm = TRUE),
+    mean_rate         = mean(rate_per_1000, na.rm = TRUE),
+    .groups = "drop"
+  ) %>% 
+  mutate(
+    overall_rate = (total_items / population) * 1000
+  )
+
+ur_table <- ur_summary %>% 
+  gt() %>% 
+  tab_header(
+    title    = "Respiratory Prescription Patterns by Urban–Rural Classification",
+    subtitle = "Scotland 2022 – Standardised rates per 1,000 population"
+  ) %>% 
+  cols_label(
+    ur_majority  = "Classification",
+    n_boards     = "Health Boards",
+    population   = "Population",
+    total_items  = "Total Prescriptions",
+    mean_rate    = "Mean Rate",
+    overall_rate = "Overall Rate"
+  ) %>% 
+  fmt_number(
+    columns = c(population, total_items),
+    decimals = 0,
+    use_seps = TRUE
+  ) %>% 
+  fmt_number(
+    columns = c(mean_rate, overall_rate),
+    decimals = 2
+  ) %>% 
+  tab_source_note(
+    source_note = "Data: Public Health Scotland & NRS Mid-2022 Population Estimates"
+  )
+
+ur_table
+
+#seasonal plot
 
 library(tidyverse)
-library(janitor) 
-library(knitr)
-library(here)
-```
 
-## Topic and research focus:
+# 1. Monthly rates per HB (if not already done)
+prescriptions_monthly_hb <- consecutive_data %>% 
+  clean_names() %>% 
+  group_by(hbt, paid_date_month) %>%           # paid_date_month like "202201"
+  summarise(total_quantity = sum(paid_quantity, na.rm = TRUE), .groups = "drop") %>% 
+  left_join(hb_populations_2022, join_by(hbt == hb)) %>% 
+  mutate(rate_per_1000 = (total_quantity / total_pop) * 1000)
 
-In my assessment, I will be looking at the number of respiratory drugs prescribed across Scotland, compared to air pollution levels. 
+# 2. Add urban–rural classification via HB code
+prescriptions_monthly_hb <- prescriptions_monthly_hb %>% 
+  left_join(hb_ur_lookup, by = c("hbt" = "HBCode"))
 
-```{r}
-
-
-june2022 <- read.csv(here("raw_data", "june2022.csv"))
-#june2022 %>%
- # clean_names() 
-
-
-respiratory_prescribing_data <- june2022 %>%
-
-  filter(str_detect(BNFItemCode, "^030")) %>%
-  
- 
-  group_by(HBT, PaidDateMonth) %>%
+# 3. Aggregate to urban–rural groups per month
+prescriptions_monthly_ur <- prescriptions_monthly_hb %>% 
+  group_by(paid_date_month, ur_majority) %>% 
   summarise(
-    TotalPaidItems = sum(NumberOfPaidItems, na.rm = TRUE),
-    .groups = 'drop'
-  )
+    total_quantity = sum(total_quantity, na.rm = TRUE),
+    total_pop      = sum(total_pop, na.rm = TRUE),
+    .groups = "drop"
+  ) %>% 
+  mutate(rate_per_1000 = (total_quantity / total_pop) * 1000)
 
-prescribing_data <- tibble(
-  HealthBoard = factor(sample(c("Grampian", "Highland", "Lothian", "Ayrshire & Arran", "Glasgow & Clyde", "Tayside", "Fife"), 1000, replace = TRUE)),
-  NumberOfPaidItems = rpois(1000, lambda = 50), 
-  PaidQuantity = NumberOfPaidItems * sample(1:3, 1000, replace = TRUE),
-  PaidDateMonth = sample(seq(as.Date("2024-01-01"), as.Date("2024-12-01"), by="month"), 1000, replace = TRUE),
-
-  Population_1000s = case_when(
-    HealthBoard == "Glasgow & Clyde" ~ 1200,
-    HealthBoard == "Lothian" ~ 900,
-    TRUE ~ 300
-  )
-) %>%
-
-  group_by(HealthBoard, Population_1000s) %>%
-  summarise(
-    TotalItems = sum(NumberOfPaidItems, na.rm = TRUE), 
-    .groups = 'drop'
-  ) %>%
+# 4. Make a simple time variable for the x‑axis
+prescriptions_monthly_ur <- prescriptions_monthly_ur %>% 
   mutate(
-
-    Rate_per_1000_Pop = (TotalItems / Population_1000s)
+    month = factor(paid_date_month,
+                   levels = sort(unique(paid_date_month)),
+                   labels = c("Jan","Feb","Mar","Apr","May","Jun",
+                              "Jul","Aug","Sep","Oct","Nov","Dec"))
   )
 
-prescribing_data %>%
-  arrange(desc(Rate_per_1000_Pop)) %>%
-  knitr::kable(
-    caption = "Summary: Respiratory Prescription Rate (Items per 1,000 Population)",
-    digits = 2,
-    col.names = c("NHS Health Board", "Population (1000s)", "Total Items", "Rate (per 1,000)")
-  )
+prescriptions_monthly_ur_clean <- prescriptions_monthly_ur %>% 
+  filter(!is.na(ur_majority))
 
-```
-
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r}
-
-prescribing_data %>%
-  ggplot(aes(x = fct_reorder(HealthBoard, Rate_per_1000_Pop), 
-             y = Rate_per_1000_Pop, 
-             fill = Rate_per_1000_Pop)) +
-  geom_col() +
-  coord_flip() + 
+# 5. Line plot with points, coloured by area type
+seasonal_plot <- ggplot(prescriptions_monthly_ur_clean,
+                        aes(x = month, y = rate_per_1000,
+                            colour = ur_majority, group = ur_majority)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
   labs(
-    title = "Initial Look at Respiratory Prescribing Rate by NHS Health Board",
-    subtitle = "Rate calculated as Total Items per 1,000 Population",
-    x = "NHS Health Board",
-    y = "Prescribing Rate (Items per 1,000 Pop.)",
-    fill = "Rate"
+    title = "Seasonal Patterns in Respiratory Prescriptions",
+    subtitle = "Urban vs rural Scotland – monthly prescription rates in 2022",
+    x = "Month (2022)",
+    y = "Prescriptions per 1,000 population",
+    colour = "Area type"
   ) +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "none") 
+  theme_grey() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 10),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
 
-
+seasonal_plot
 ```
-This bar chart shows that the Highlands have the highest prescribing rates, reaching over 27 per 1,000 people, with the lowest being Glasgow and Clyde, with a lower prescribing of around 6 per 1,000.
-Next, we will link this to air pollution levels from each Health Board, from data taken in 2022 by Ricardo, for the Scottish Government. 
-```{r}
 
-```
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
