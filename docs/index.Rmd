@@ -12,7 +12,9 @@ library(sf)          # maps
 library(janitor)     # clean_names
 library(here)        # file paths
 library(ggspatial)   # north arrow + scale bar
-library(gt)          # simple table (basic use only)
+library(gt) # simple table (basic use only)
+library(ggplot2)
+
 
 # All 2022 prescription CSVs
 files <- list.files(here("raw_data", "consecutive_data"), pattern = "csv")
@@ -22,7 +24,7 @@ consecutive_data <- files %>%
   clean_names()
 
 # Filter to your drug group if needed, otherwise keep all
-# consecutive_data <- consecutive_data %>% filter(str_starts(bnf_item_code, "03"))
+consecutive_data <- consecutive_data %>% filter(str_starts(bnf_item_code, "03"))
 
 # Health board summary (hub)
 prescriptions_hb <- consecutive_data %>% 
@@ -30,7 +32,7 @@ prescriptions_hb <- consecutive_data %>%
   summarise(total_quantity = sum(paid_quantity, na.rm = TRUE), .groups = "drop")
 
 # Population per HB
-hb_populations <- read_csv(here("week06", "Week6_hb2019_pop_est.csv")) %>% 
+hb_populations <- read_csv(here("week_data", "Week6_hb2019_pop_est.csv")) %>% 
   clean_names()
 
 hb_populations_2022 <- hb_populations %>% 
@@ -60,7 +62,8 @@ hb_ur_lookup <- tribble(
   "S08000032", "Mixed"
 )
 
-NHS_healthboards <- st_read(here("week06", "Week6_NHS_HealthBoards_2019.shp"))
+
+NHS_healthboards <- st_read(here("week_data", "Week6_NHS_healthboards_2019.shp"))
 
 hb_prescription_rates <- NHS_healthboards %>% 
   left_join(hb_rates,      join_by(HBCode == hbt)) %>% 
