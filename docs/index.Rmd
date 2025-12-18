@@ -29,6 +29,9 @@ Rates were calculated as the number of prescriptions per 1000 residents, creatin
 - **Population data**: Week6_hb2019_pop_est.csv (NRS Mid-2022 Population Estimates)
 - **Spatial data**: Week6_NHS_healthboards_2019.shp (Health Board boundaries)
 - **Classification**: Manual urban/rural lookup based on Scottish Government Urban Rural Classification 2020
+ Note: Data is sourced from Public Health Scotland Open Data Portal.
+ Direct links to 2022 monthly datasets:
+ https://www.opendata.nhs.scot/dataset/prescriptions-in-the-community
 
 ---
 
