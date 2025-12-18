@@ -1,214 +1,456 @@
 ---
 title: "Assessment"
 output: html_document
-date: "2025-11-14"
+date: "2025-11-27"
 ---
 
-
-not too much:
 ```{r}
-library(tidyverse)   # dplyr + ggplot2
-library(sf)          # maps
-library(janitor)     # clean_names
-library(here)        # file paths
-library(ggspatial)   # north arrow + scale bar
-library(gt) # simple table (basic use only)
-library(ggplot2)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
 
+### Respiratory Prescriptions in Scotland (2022)
+## Introduction
 
-# All 2022 prescription CSVs
-files <- list.files(here("raw_data", "consecutive_data"), pattern = "csv")
+17% of the Scottish population were diagnosed with asthma in 2022, which increased from 13% in 2003. Additionally, 5% of people had been diagnosed with chronic obstructive pulmonary disease (COPD). Scotland’s population in 2022 was approximately 5.4 million, meaning around 920,000 people were living with asthma and 270,000 with COPD. Smoking and COPD are correlated, with smokers (20+ cigarettes a day) having a risk of 19% of developing COPD compared to non-smokers, who only have a 2% risk (Scottish Health Survey, et al. 2022). 
 
-consecutive_data <- files %>% 
-  map_dfr(~ read_csv(here("raw_data", "consecutive_data", .x))) %>% 
-  clean_names()
+This analysis focuses on three research questions. Firstly, how do respiratory prescription rates vary across Scotland’s 14 health boards? Secondly, do urban, rural, and mixed areas show systematic prescribing differences? Lastly, are there seasonal patterns and what might drive them? 
 
-# Filter to your drug group if needed, otherwise keep all
-consecutive_data <- consecutive_data %>% filter(str_starts(bnf_item_code, "03"))
+This report uses 2022 prescription data and filters for BNF Chapter 03 to analyse the number of prescription items rather than the dosage. This was used to standardise different medications, including inhalers, tablets, and liquids, in addition to gaining insight into healthcare utilisation frequency. While the number of items does not measure the total volume consumed, it is a better way of analysing geographic prescribing patterns. 
 
-# Health board summary (hub)
-prescriptions_hb <- consecutive_data %>% 
-  group_by(hbt) %>% 
-  summarise(total_quantity = sum(paid_quantity, na.rm = TRUE), .groups = "drop")
+While BNF Chapter 03 covers all respiratory medications, this analysis primarily uses Asthma and COPD as proxies for total respiratory burden. These two conditions represent the vast majority of chronic respiratory morbidity in Scotland. Furthermore, unlike acute infections (like pneumonia) which may be treated with one-off antibiotic courses in other BNF chapters, asthma and COPD require consistent, long-term prescribing, making them the most reliable indicators of geographic and seasonal health trends in community prescribing data.
 
-# Population per HB
-hb_populations <- read_csv(here("week_data", "Week6_hb2019_pop_est.csv")) %>% 
-  clean_names()
+Understanding geographic variation in respiratory prescribing is critical for resource allocation and health equity. If there are systematic differences between urban and rural areas, this suggests unequal disease burden or healthcare access requiring targeted interventions. Seasonal patterns inform timing of public health campaigns and service capacity planning, potentially preventing thousands of emergency admissions annually.
 
-hb_populations_2022 <- hb_populations %>% 
-  filter(sex == "All") %>% 
-  select(hb, total_pop = all_ages)
+Rates were calculated as the number of prescriptions per 1000 residents, creating a fair comparison across different health boards of different populations. 
 
-# Join once to get rate per 1,000
-hb_rates <- prescriptions_hb %>% 
-  left_join(hb_populations_2022, join_by(hbt == hb)) %>% 
-  mutate(rate_per_1000 = (total_quantity / total_pop) * 1000)
+# Data Sources
 
-hb_ur_lookup <- tribble(
-  ~HBCode,     ~ur_majority,
-  "S08000015", "Mixed",
-  "S08000016", "Rural",
-  "S08000017", "Rural",
-  "S08000019", "Mixed",
-  "S08000020", "Mixed",
-  "S08000022", "Rural",
-  "S08000024", "Urban",
-  "S08000025", "Rural",
-  "S08000026", "Rural",
-  "S08000028", "Rural",
-  "S08000029", "Mixed",
-  "S08000030", "Mixed",
-  "S08000031", "Urban",
-  "S08000032", "Mixed"
+- **Prescription data**: 12 monthly CSV files from Public Health Scotland Open Data Portal
+- **Population data**: Week6_hb2019_pop_est.csv (NRS Mid-2022 Population Estimates)
+- **Spatial data**: Week6_NHS_healthboards_2019.shp (Health Board boundaries)
+- **Classification**: Manual urban/rural lookup based on Scottish Government Urban Rural Classification 2020
+
+---
+
+## Setup and Data Preparation
+
+### Load Libraries
+```{r libraries}
+library(tidyverse)   # Data manipulation and visualization
+library(sf)          # Spatial data handling
+library(janitor)     # Data cleaning (clean_names)
+library(here)        # File path management
+library(ggspatial)   # North arrow and scale bar for maps
+library(gt)          # Professional tables
+```
+
+### Define Constants (DRY Principle)
+```{r constants}
+# Color palette for urban/rural categories
+ur_colors <- c(
+  "Urban" = "#228B22",  # Forest green
+  "Rural" = "#4FC3F7",  # Sky blue
+  "Mixed" = "#BA68C8"   # Purple
 )
 
+# Urban/Rural classification lookup table
+hb_ur_lookup <- tribble(
+  ~HBCode,     ~ur_majority,
+  "S08000015", "Mixed",      # Ayrshire & Arran
+  "S08000016", "Rural",      # Borders
+  "S08000017", "Rural",      # Dumfries & Galloway
+  "S08000019", "Mixed",      # Forth Valley
+  "S08000020", "Mixed",      # Grampian
+  "S08000022", "Rural",      # Highland
+  "S08000024", "Urban",      # Lothian
+  "S08000025", "Rural",      # Orkney
+  "S08000026", "Rural",      # Shetland
+  "S08000028", "Rural",      # Western Isles
+  "S08000029", "Mixed",      # Fife
+  "S08000030", "Mixed",      # Tayside
+  "S08000031", "Urban",      # Greater Glasgow & Clyde
+  "S08000032", "Mixed"       # Lanarkshire
+)
+```
 
-NHS_healthboards <- st_read(here("week_data", "Week6_NHS_healthboards_2019.shp"))
+### Load and Process Data
+```{r load-data}
+# Load all 12 months of 2022 prescription data
+# Filter for BNF Chapter 03 (Respiratory System medications)
+prescription_files <- list.files(
+  here("raw_data", "consecutive_data"), 
+  pattern = "csv",
+  full.names = TRUE
+)
 
-hb_prescription_rates <- NHS_healthboards %>% 
-  left_join(hb_rates,      join_by(HBCode == hbt)) %>% 
-  left_join(hb_ur_lookup,  by = "HBCode")
+consecutive_data <- prescription_files %>% 
+  map_dfr(~ read_csv(.x, show_col_types = FALSE)) %>% 
+  clean_names() %>% 
+  filter(str_starts(bnf_item_code, "03"))  
 
-map_prescriptions <- hb_prescription_rates %>% 
-  ggplot(aes(fill = rate_per_1000)) +
-  geom_sf(colour = "black", size = 0.1) +
-  scale_fill_distiller(
-    palette = "Blues",
-    direction = 1,
-    name = "Prescriptions\nper 1,000"
-  ) +
-  labs(
-    title = "Prescriptions per 1,000 People by Health Board (2022)",
-    subtitle = "NHS Scotland health boards"
-  ) +
-  theme_void() +
-  annotation_scale(location = "tl") +
-  annotation_north_arrow(location = "nl")
+```
+```{r aggregate-prescriptions}
+# Summarise total prescription items by health board
+prescriptions_hb <- consecutive_data %>%
+  group_by(hbt) %>%
+  summarise(
+    total_items = sum(number_of_paid_items, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+```{r load-population}
+# Load and prepare population data 
+hb_populations_2022 <- read_csv(
+  here("week_data", "Week6_hb2019_pop_est.csv"), 
+  show_col_types = FALSE
+) %>% 
+  clean_names() %>% 
+  filter(
+    year == 2022,
+    sex == "All",
+    hb != "S92000003"  
+  ) %>%
+  select(hb, total_pop = all_ages) %>%
+  distinct(hb, .keep_all = TRUE)
+```
+```{r calculate-rates}
+# Join and calculate rates per 1,000 population
+hb_rates <- prescriptions_hb %>%
+  left_join(hb_populations_2022, join_by(hbt == hb)) %>%
+  mutate(rate_per_1000 = (total_items / total_pop) * 1000)
 
-map_prescriptions
+```
 
-ur_summary <- hb_prescription_rates %>% 
-  group_by(ur_majority) %>% 
-  summarise(mean_rate = mean(rate_per_1000, na.rm = TRUE), .groups = "drop")
+**Question: In a group of 1,000 people, how many respiratory prescription items can we expect to be dispensed in each health board?**
+```{r load-spatial}
+# Load NHS Health Board boundaries
+NHS_healthboards <- st_read(
+  here("week_data", "Week6_NHS_healthboards_2019.shp"),
+  quiet = TRUE
+)
 
-ggplot(ur_summary, aes(x = ur_majority, y = mean_rate, fill = ur_majority)) +
-  geom_col() +
-  labs(
-    title = "Average prescribing rate by area type",
-    x = "Area type",
-    y = "Prescriptions per 1,000"
-  ) +
-  theme_grey() +
-  theme(legend.position = "none")
+# Join spatial data with prescription rates and urban/rural classification
+hb_prescription_rates <- NHS_healthboards %>%
+  left_join(hb_rates, join_by(HBCode == hbt)) %>%
+  left_join(hb_ur_lookup, by = "HBCode")
+```
+```{r summary-statistics}
 
-
-library(gt)
-
-
-# Summarise by urban–rural group
+#Aggregate statistics
 ur_summary <- hb_prescription_rates %>% 
   st_drop_geometry() %>% 
   group_by(ur_majority) %>% 
   summarise(
-    n_boards          = n(),
-    population        = sum(total_pop, na.rm = TRUE),
-    total_items       = sum(total_quantity, na.rm = TRUE),
-    mean_rate         = mean(rate_per_1000, na.rm = TRUE),
+    n_boards    = n(),
+    population  = sum(total_pop, na.rm = TRUE),
+    total_items = sum(total_items, na.rm = TRUE),
+    mean_rate   = mean(rate_per_1000, na.rm = TRUE),
     .groups = "drop"
   ) %>% 
-  mutate(
-    overall_rate = (total_items / population) * 1000
+  mutate(overall_rate = (total_items / population) * 1000)
+```
+
+---
+
+## Visualizations
+
+### Figure 1: Choropleth Map
+```{r map, fig.width=10, fig.height=8}
+# Find max and min for map subtitle
+max_hb <- hb_rates %>% slice_max(rate_per_1000, n = 1)
+min_hb <- hb_rates %>% slice_min(rate_per_1000, n = 1)
+
+# Create the map
+map_prescriptions <- hb_prescription_rates %>%
+  ggplot(aes(fill = rate_per_1000)) +
+  geom_sf(colour = "white", size = 0.1) +
+  scale_fill_distiller(
+    palette = "BuGn",        
+    direction = 1,           
+    limits = c(NA, 2000),
+    name = "Items per\n1,000 People"
+  ) +
+  labs(
+    title = "Respiratory Prescription Rates Across Scotland (2022)",
+    subtitle = sprintf(
+      "Highest: %s (%.1f) | Lowest: %s (%.1f) | BNF Chapter 03",
+      max_hb$hbt, max_hb$rate_per_1000,
+      min_hb$hbt, min_hb$rate_per_1000
+    ),
+    caption = "Data: Public Health Scotland & NRS Mid-2022 Population Estimates"
+  ) +
+  annotation_scale(
+    location = "bl",        
+    width_hint = 0.25
+  ) +
+  annotation_north_arrow(
+    location = "tl",        
+    pad_y = unit(0.5, "in"),
+    style = north_arrow_nautical(
+      fill = c("grey40", "white"),
+      line_col = "grey20"
+    )
+  ) +
+  theme_grey() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    plot.subtitle = element_text(size = 9),
+    plot.caption = element_text(size = 8, hjust = 1),
+    legend.title = element_text(face = "bold", size = 10)
   )
 
-ur_table <- ur_summary %>% 
-  gt() %>% 
+map_prescriptions
+```
+
+**Interpretation:**
+
+- **Darker green** = Higher prescription rates (more respiratory medications per 1,000 people)
+- **Lighter blue** = Lower prescription rates (fewer respiratory medications per 1,000 people)
+
+The range of prescriptions per 1,000 people between health boards was 1,107.3 (Lothian) to 1,999.3 (Dumfries & Galloway). The percentage difference of the range is 80%. This large variation persists among large health boards, with Greater Glasgow at 1,657.7 items and Lothian with 1,107.3, showing the results are not due to smaller, less reliable health boards.
+
+As seen from the map, there is a southwest-to-northeast gradient pattern. Southwest Scotland shows the highest rates: Dumfries & Galloway (1,999.3 items per 1,000), Lanarkshire (1,773.4), and Ayrshire & Arran (1,746.2). Northeast areas show lower rates: Lothian (1,107.3), Grampian (1,195.6), and Orkney (1,177.1). However, areas that do not follow this pattern are the Highlands (1,394.4) and Western Isles (1676.0), showing that neighbouring boards do not always have similar rates.
+
+Possible reasons why this distribution was observed include Dumfries & Galloway having an ageing population of 27.1%, which is 8.1% higher than Scotland’s average of 19% (Brinkhoff, et al. 2022). Another reason is Ayrshire & Arran, Lanarkshire and Dumfries & Galloway being former coal-mining regions of Scotland, which is an industry linked to high COPD rates (McIver, et al. 2016).
+
+
+### Figure 2: Bar Chart by Urban/Rural Classification
+```{r bar-chart, fig.width=8, fig.height=6}
+#Create bar chart
+ggplot(ur_summary, aes(x = reorder(ur_majority, overall_rate),  
+                       y = overall_rate, fill = ur_majority)) +  
+  geom_col(width = 0.7) +
+  geom_text(aes(label = sprintf("%.1f", overall_rate)),  
+            vjust = -0.5, size = 4, fontface = "bold") +
+  scale_fill_manual(values = ur_colors) +
+  labs(
+    title = "Respiratory Prescribing by Area Classification",
+    subtitle = "Population-weighted prescription rate per 1,000 (2022)",  
+    x = NULL,
+    y = "Prescriptions per 1,000 Population"
+  ) +
+  theme_grey() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(face = "bold", size = 14),
+    panel.grid.major.x = element_blank()
+  )
+```
+From Figure 2, there was a rural rate of 1,507.7 per 1,000, mixed rate of 1,489.7 
+per 1,000 and the urban rate of 1,452.8 per 1,000. This shows a 54.9-item 
+difference between the rural and urban areas, aligning with the hypotheses of an 
+older population in rural areas, more smoking and the industrial history in these 
+areas.
+
+
+### Table 1: Summary Statistics
+```{r summary-table}
+#Create grouped table
+hb_grouped <- hb_prescription_rates %>%
+  st_drop_geometry() %>%
+  select(ur_majority, HBName, total_pop, total_items, rate_per_1000) %>%
+  group_by(ur_majority) %>%
+  mutate(
+    group_mean = mean(rate_per_1000, na.rm = TRUE),
+    deviation = rate_per_1000 - group_mean
+  ) %>%
+  ungroup() %>%
+  arrange(ur_majority, desc(rate_per_1000)) %>%
+  select(ur_majority, HBName, total_pop, total_items, rate_per_1000, deviation) %>%
+  gt(groupname_col = "ur_majority") %>%
   tab_header(
-    title    = "Respiratory Prescription Patterns by Urban–Rural Classification",
-    subtitle = "Scotland 2022 – Standardised rates per 1,000 population"
-  ) %>% 
+    title = md("**Respiratory Prescription Rates by NHS Health Board**"),
+    subtitle = "Scotland 2022 – Grouped by urban/rural classification"
+  ) %>%
   cols_label(
-    ur_majority  = "Classification",
-    n_boards     = "Health Boards",
-    population   = "Population",
-    total_items  = "Total Prescriptions",
-    mean_rate    = "Mean Rate",
-    overall_rate = "Overall Rate"
-  ) %>% 
+    HBName = "Health Board",
+    total_pop = "Population",
+    total_items = "Total Items",
+    rate_per_1000 = "Rate per 1,000",
+    deviation = "Deviation from Mean"
+  ) %>%
   fmt_number(
-    columns = c(population, total_items),
+    columns = c(total_pop, total_items),
     decimals = 0,
     use_seps = TRUE
-  ) %>% 
+  ) %>%
   fmt_number(
-    columns = c(mean_rate, overall_rate),
-    decimals = 2
-  ) %>% 
+    columns = c(rate_per_1000, deviation),
+    decimals = 1
+  ) %>%
+  summary_rows(
+    groups = TRUE,
+    columns = c(total_pop, total_items),
+    fns = list(
+      Total = ~sum(., na.rm = TRUE)
+    ),
+    formatter = fmt_number,
+    decimals = 0,
+    use_seps = TRUE
+  ) %>%
+  summary_rows(
+    groups = TRUE,
+    columns = rate_per_1000,
+    fns = list(
+      Mean = ~mean(., na.rm = TRUE),
+      SD = ~sd(., na.rm = TRUE)
+    ),
+    formatter = fmt_number,
+    decimals = 1
+  ) %>%
+  data_color(
+    columns = rate_per_1000,
+    palette = "RdYlGn",
+    reverse = TRUE
+  ) %>%
+  data_color(
+    columns = deviation,
+    palette = "PiYG",
+    domain = c(-400, 425)
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels()
+  ) %>%
+  tab_style(
+    style = cell_fill(color = "#E8F4F8"),
+    locations = cells_row_groups()
+  ) %>%
+  tab_footnote(
+    footnote = "Positive values indicate rates above the group mean; negative values indicate rates below",
+    locations = cells_column_labels(columns = deviation)
+  ) %>%
   tab_source_note(
     source_note = "Data: Public Health Scotland & NRS Mid-2022 Population Estimates"
-  )
+  ) %>%
+  opt_row_striping()
 
-ur_table
+hb_grouped
+```
 
-#seasonal plot
+Table 1 shows heterogeneity can be seen within groups. In the mixed category, with the highest being Lanarkshire (1,773.4, deviation +271.1), and the lowest being Grampian (1,195.6, deviation −306.6). This is a 577.8 item range, much larger than the difference between categories, implying settlement type has limited predictive power. Smoking is linked to deprivation, with the more deprived areas, such as Glasgow, having higher rates in comparison to less deprived areas, such as Lothian, which have lower rates (An Atlas of Tobacco Smoking in Scotland, et al. 2007).
 
-library(tidyverse)
+Rural boards show massive internal variation, with prescribing ranging from 1,177.1 (Orkney) to 1,999.3 (Dumfries & Galloway), a range of 822 items per 1,000. Dumfries & Galloway prescribes 422 items above the rural average (27% higher than typical). Orkney prescribes 400 items below the rural mean, matching urban Lothian (1,107.3), demonstrating that rural classification alone does not predict high prescribing. This 822-item within-category range, exceeding the 195-item difference between rural and urban averages, reinforces that settlement type provides limited explanatory power.
 
-# 1. Monthly rates per HB (if not already done)
+Despite both being urban, Greater Glasgow (1,657.7 per 1,000) and Lothian (1,107.3) differ by 550 items, more than the 195-item rural-urban gap and representing 50% higher prescribing in Glasgow. This divergence reflects socioeconomic rather than geographic factors: Glasgow contains Scotland's most deprived areas with 34.0% smoking prevalence, while Edinburgh shows 23.5% (NHS Health Scotland et al., 2007). Given that heavy smokers have ten times higher COPD prevalence than non-smokers (19% vs 2%) and smoking strongly correlates with deprivation the Glasgow-Lothian gap demonstrates that deprivation matters more than settlement classification.
+
+Three boards challenge simple patterns. Dumfries & Galloway (1,999.3) prescribes 422 items above the rural average, 27% higher than typical, likely reflecting its aging population, former coal-mining areas, and associated respiratory diseases. Conversely, Grampian (1,195.6) and Orkney (1,177.1) prescribe at urban Lothian levels despite non-urban classification, suggesting factors such as younger demographics (Aberdeen's university population), lower smoking prevalence, or better air quality. These outliers demonstrate that urban-rural classification provides limited predictive value and that demographic composition, industrial history, and socioeconomic factors matter more than settlement type.
+
+
+### Figure 3: Seasonal Time Series
+```{r seasonal-data}
+# Calculate population totals by urban/rural classification (only once)
+hb_populations_ur <- hb_populations_2022 %>%
+  left_join(hb_ur_lookup, by = c("hb" = "HBCode")) %>%
+  group_by(ur_majority) %>%
+  summarise(total_pop = sum(total_pop), .groups = "drop")
+
+# Monthly prescription items by health board
 prescriptions_monthly_hb <- consecutive_data %>% 
-  clean_names() %>% 
-  group_by(hbt, paid_date_month) %>%           # paid_date_month like "202201"
-  summarise(total_quantity = sum(paid_quantity, na.rm = TRUE), .groups = "drop") %>% 
-  left_join(hb_populations_2022, join_by(hbt == hb)) %>% 
-  mutate(rate_per_1000 = (total_quantity / total_pop) * 1000)
-
-# 2. Add urban–rural classification via HB code
-prescriptions_monthly_hb <- prescriptions_monthly_hb %>% 
+  group_by(hbt, paid_date_month) %>%
+  summarise(total_items = sum(number_of_paid_items, na.rm = TRUE), .groups = "drop") %>%
   left_join(hb_ur_lookup, by = c("hbt" = "HBCode"))
 
-# 3. Aggregate to urban–rural groups per month
+# Aggregate to urban/rural groups per month
 prescriptions_monthly_ur <- prescriptions_monthly_hb %>% 
+  filter(!is.na(ur_majority)) %>% 
   group_by(paid_date_month, ur_majority) %>% 
   summarise(
-    total_quantity = sum(total_quantity, na.rm = TRUE),
-    total_pop      = sum(total_pop, na.rm = TRUE),
+    total_items = sum(total_items, na.rm = TRUE),
     .groups = "drop"
-  ) %>% 
-  mutate(rate_per_1000 = (total_quantity / total_pop) * 1000)
-
-# 4. Make a simple time variable for the x‑axis
-prescriptions_monthly_ur <- prescriptions_monthly_ur %>% 
+  ) %>%
+  # Join with correct population totals (not summing repeatedly)
+  left_join(hb_populations_ur, by = "ur_majority") %>%
   mutate(
+    rate_per_1000 = (total_items / total_pop) * 1000,
     month = factor(paid_date_month,
                    levels = sort(unique(paid_date_month)),
                    labels = c("Jan","Feb","Mar","Apr","May","Jun",
-                              "Jul","Aug","Sep","Oct","Nov","Dec"))
+                             "Jul","Aug","Sep","Oct","Nov","Dec"))
   )
-
-prescriptions_monthly_ur_clean <- prescriptions_monthly_ur %>% 
-  filter(!is.na(ur_majority))
-
-# 5. Line plot with points, coloured by area type
-seasonal_plot <- ggplot(prescriptions_monthly_ur_clean,
+```
+```{r seasonal-plot, fig.width=10, fig.height=6}
+#Create seasonal plot
+seasonal_plot <- ggplot(prescriptions_monthly_ur,
                         aes(x = month, y = rate_per_1000,
-                            colour = ur_majority, group = ur_majority)) +
+                            colour = ur_majority, 
+                            fill = ur_majority,
+                            group = ur_majority)) +
   geom_line(size = 1) +
   geom_point(size = 2) +
+  geom_smooth(method = "loess", se = TRUE, alpha = 0.15) +
+  scale_color_manual(values = ur_colors) +
+  scale_fill_manual(values = ur_colors) +
   labs(
     title = "Seasonal Patterns in Respiratory Prescriptions",
     subtitle = "Urban vs rural Scotland – monthly prescription rates in 2022",
     x = "Month (2022)",
-    y = "Prescriptions per 1,000 population",
-    colour = "Area type"
+    y = "Prescriptions per 1,000 Population",
+    colour = "Area Classification",
+    fill = "Area Classification"
+  ) +
+  guides(
+    colour = guide_legend(title = "Area Classification"),
+    fill = guide_legend(title = "Area Classification")
   ) +
   theme_grey() +
   theme(
     plot.title = element_text(face = "bold", size = 14),
     plot.subtitle = element_text(size = 10),
-    axis.text.x = element_text(angle = 45, hjust = 1)
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom"
   )
 
 seasonal_plot
 ```
+Figure 3 shows both the actual monthly prescription rates (angular lines connecting data points) and smoothed trend lines (LOESS curves with 95% confidence intervals shown as shaded areas) to highlight overall seasonal patterns.
 
+Seasonal variation was observed across 2022, with rates generally increasing from spring through summer. Rural areas showed the highest rates, peaking in August at approximately 140 prescriptions per 1,000 population, while Mixed areas peaked around 135 per 1,000 and Urban areas remained lower at approximately 130 per 1,000. The lowest rates occurred in February (~103-118 per 1,000 across all classifications). A secondary peak appeared in December (~130-150 per 1,000), following an autumn decline. All three area classifications follow similar seasonal trajectories, with Rural areas consistently showing the highest rates throughout the year.
+
+Scotland's grass pollen season peaks from May to July and weed pollen from June to September (Met Office, et al. 2019). The observed spring-to-summer increase in prescriptions, with sustained elevation from May through August, aligns with this pollen season timing. Pollen exposure triggers allergic asthma and exacerbates existing respiratory conditions (D'Amato, et al. 2019), leading to increased demand for bronchodilators, inhaled corticosteroids, and antihistamines. The August peak may reflect cumulative seasonal allergic burden rather than a single-month spike, as repeated pollen exposure throughout summer can worsen respiratory symptoms progressively.
+
+Influenza rates are typically highest during the winter months in Scotland (Kavanagh, et al. 2011). Colder weather and increased indoor activity during these months facilitate respiratory transmission, which likely explains the December primary peak as winter respiratory infections increase prescribing demand.
+
+February shows the lowest prescribing month (~103-118 per 1,000) despite winter conditions. This may reflect stockpiling of prescriptions in December before the busy Christmas period. The January-to-February trough demonstrates that prescribing data may not perfectly mirror disease burden timing due to patient behaviour and healthcare delivery patterns. Hospital admission data, which is unaffected by prescribing timing decisions, could provide a clearer picture of actual seasonal respiratory disease burden.
+
+While all area classifications follow parallel seasonal patterns, the gap between Rural, Mixed and Urban areas remains relatively consistent throughout the year. This shows that seasonal factors, like pollen, affect all areas of Scotland equally. Although urban areas typically have lower pollen counts compared to rural areas, their rates could be similar due to pollution worsening symptoms of asthma. 
+
+---
+
+## Discussion
+
+This analysis shows geographic variation in respiratory prescribing, with rates ranging from 1,107.3 items per 1,000 population (Lothian) to 1,999.3 (Dumfries & Galloway), which is an 81% difference. This variation likely reflects either genuine health inequalities or different clinical practices between regions. Identifying what drives this gap could help the NHS allocate resources more effectively and improve patient outcomes. Southwest Scotland shows concentrated high prescribing (Dumfries & Galloway, Lanarkshire, Ayrshire all >1,700), while northeast areas display lower rates (Lothian, Grampian, Orkney all <1,200). Urban-rural classification provides a limited explanation, with within-category variation (578-822 items) exceeding between-category differences (55 items). Scotland's two urban health boards differ by 550 items per 1,000 despite the same classification, suggesting socioeconomic factors have more influence than settlement type in determining prescribing patterns.
+
+Seasonal patterns revealed sustained elevation from May through August (peak ~130-140 per 1,000), aligning with Scotland's pollen season. Unlike a sharp single-month spike, the gradual spring-to-summer increase suggests cumulative allergic burden as individuals experience repeated pollen exposure throughout the season. The primary December peak (~130-150 per 1,000) reflects winter respiratory infections, while the February trough (~103-118 per 1,000) may indicate anticipatory prescribing behaviour in December and reduced healthcare seeking in the post-Christmas period rather than genuinely lower disease burden.
+
+This analysis measured prescription items rather than dosage quantities, showing healthcare utilisation frequency rather than medication volume. The limitation is that the number of items may not always show how sick a patient is because dosages vary.  Despite this drawback, the number of items was used in this analysis because it showed seasonal patterns better and could still grasp the respiratory disease burden across the country. Another limitation is the urban-rural classification. This is a simplification; 'Mixed' health boards have both urban and remote rural areas (e.g. Grampian includes Aberdeen city alongside sparsely populated Aberdeenshire), therefore sub-regional variation may not be accounted. The January-February trough demonstrates that prescribing data can differ from disease burden timing due to healthcare delivery factors, as cold and influenza rates are still high during these months. Future analyses should also link prescribing data with hospital admission records to distinguish healthcare access patterns from true disease burden.
+
+Findings indicate the need for geographically targeted interventions in southwest Scotland (Dumfries & Galloway, Lanarkshire, Ayrshire), including enhanced smoking cessation programs, expanded pulmonary rehabilitation services, and increased respiratory specialist capacity. The June pollen-season peak suggests spring public health campaigns could be beneficial, emphasising allergen avoidance, preventer medication adherence, and early intervention for allergic asthma exacerbations. Winter campaigns should focus on influenza vaccination uptake and recognising early signs of respiratory problems. Simple urban-rural resource allocation is insufficient. Therefore, interventions must consider local deprivation profiles, demographic composition, and environmental factors. For example, Greater Glasgow (urban, deprived) requires fundamentally different approaches than Lothian (urban, affluent). Lothian’s lower prescribing rate could reflect its younger population. Edinburgh has a significantly lower median age than the national average, as several major universities are located here and conditions like COPD are strongly age-associated.
+
+Future research should employ Scottish Index of Multiple Deprivation (SIMD)-adjusted analyses to isolate geographic effects from socioeconomic confounding. Datazone-level investigation would identify variance within health boards currently, which could be masked by the board classification. Linking prescribing records to hospital admissions and GP consultations would distinguish healthcare access patterns from true respiratory morbidity burden. Comparing 2022 with other years would determine whether the seasonal patterns observed were stable or contained anomalies, in addition to how policy changes impact disease burden.
+
+## Conclusion
+
+This analysis reveals substantial geographic variation in respiratory prescribing across Scotland, clear seasonal patterns driven by pollen and influenza seasons, and limited predictive value of urban-rural classification. The magnitude of variation suggests either genuine health inequalities or systematic practice differences requiring policy intervention. Findings indicate that resource allocation should consider deprivation and demographics rather than settlement type alone, and that seasonal public health campaigns could reduce respiratory disease burden. Future research should link prescribing data with clinical outcomes and deprivation indices to distinguish health need from practice variation, enabling targeted interventions to address respiratory health inequalities across Scotland.
+
+## References
+
+AN ATLAS of TOBACCO SMOKING in SCOTLAND: A REPORT PRESENTING ESTIMATED SMOKING PREVALENCE and SMOKING-ATTRIBUTABLE DEATHS within SCOTLAND NHS Health Scotland, ISD Scotland and ASH Scotland. 2007.
+
+Brinkhoff, Thomas. “Dumfries and Galloway (Council Area, United Kingdom) - Population Statistics, Charts, Map and Location.” Citypopulation.de, 2022, citypopulation.de/en/uk/scotland/wards/S12000006__dumfries_and_galloway/. 
+
+D’Amato, Gennaro, et al. “Allergens as Trigger Factors for Allergic Respiratory Diseases and Severe Asthma during Thunderstorms in Pollen Season.” Aerobiologia, vol. 35, no. 2, 22 Jan. 2019, pp. 379–382, https://doi.org/10.1007/s10453-019-09560-8.
+McIvor, Arthur, and Ronald Johnston. Miners’ Lung. 22 Apr. 2016. 
+
+Met Office. “When Is Hay Fever Season in the UK?” Met Office, 9 July 2019, weather.metoffice.gov.uk/warnings-and-advice/seasonal-advice/health-wellbeing/pollen/when-is-hayfever-season.
+
+Scottish Government. “The Scottish Health Survey 2022 Volume 1: Main Report - Respiratory.” Www.gov.scot, 5 Dec. 2023, www.gov.scot/publications/scottish-health-survey-2022-volume-1-main-report/pages/7/.
+
+
+
+```
+
+---
+```
 
 Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
