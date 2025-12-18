@@ -446,7 +446,7 @@ Met Office. “When Is Hay Fever Season in the UK?” Met Office, 9 July 2019, w
 
 Scottish Government. “The Scottish Health Survey 2022 Volume 1: Main Report - Respiratory.” Www.gov.scot, 5 Dec. 2023, www.gov.scot/publications/scottish-health-survey-2022-volume-1-main-report/pages/7/.
 
-
+www.opendata.nhs.scot. (n.d.). Prescriptions in the Community - Scottish Health and Social Care Open Data. [online] Available at: https://www.opendata.nhs.scot/dataset/prescriptions-in-the-community.
 
 ```
 
